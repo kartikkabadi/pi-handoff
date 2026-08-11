@@ -48,7 +48,9 @@ Config file: `~/.pi/agent/pi-handoff.json`.
 
 ## Auto-run
 
-When the context crosses the threshold, the extension generates the handoff document in the background and saves it as `handoff-ready-<session-id>.md` in the OS temp dir (`$TMPDIR/pi-handoff/`). It notifies you once. The next `/handoff` switches instantly using that document (no regeneration) and automatically sends "Continue the work from the handoff document." so the fresh session's agent resumes immediately. A reviewable copy of every handoff is kept at `$TMPDIR/pi-handoff/handoff-<session-id>.md`. One handoff per crossing; the trigger resets when context drops below the threshold (for example after compaction).
+When the context crosses the threshold, the extension generates the handoff document in the background and saves it as `handoff-ready-<session-id>.md` in the OS temp dir (`$TMPDIR/pi-handoff/`). It notifies you once. The next `/handoff` switches instantly using that document (no regeneration) and automatically sends "Continue the work from the handoff document." so the fresh session's agent resumes immediately. A copy of the handoff is kept at `$TMPDIR/pi-handoff/handoff-<session-id>.md`. One handoff per crossing; the trigger resets when context drops below the threshold (for example after compaction).
+
+Pruning: when a session starts, all handoff files from other sessions are deleted — only the current session's files survive. The prepared document is also deleted the moment `/handoff` consumes it.
 
 A note on "auto": pi's extension API gives event hooks no session-switch ability (`newSession` is command-only), so the actual switch stays a `/handoff` keystroke. Everything else — detection, document generation, saving — is automatic. Full zero-keystroke switching would need a pi fork (OMP-style).
 

@@ -45,7 +45,7 @@
  * modes generation runs headless with the same semantics.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -560,6 +560,20 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 		},
+	});
+
+	// Prune on session start: handoff files from other sessions are deleted.
+	// Only files belonging to the current session survive.
+	pi.on("session_start", (event, ctx) => {
+		try {
+			const sessionId = ctx.sessionManager.getSessionId();
+			for (const file of readdirSync(TMP_DIR)) {
+				if (!file.startsWith("handoff-") || file.includes(sessionId)) continue;
+				rmSync(join(TMP_DIR, file), { force: true });
+			}
+		} catch {
+			// no temp dir yet — nothing to prune
+		}
 	});
 
 	// Auto-run. Mode "turn" (default): check after each full turn. Mode
