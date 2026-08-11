@@ -6,11 +6,9 @@ One `/handoff` command reads the current session, writes a structured handoff do
 
 ## Demo
 
-The full flow: the session crosses the threshold, the document is prepared in the background, `/handoff` switches instantly, and the new session continues with the handoff as context.
+The full flow, 2x speed: the session crosses the threshold, the document is prepared in the background, `/handoff` switches instantly, and the new session continues with the handoff as context.
 
-<video src="https://github.com/kartikkabadi/pi-handoff/raw/main/demo/handoff-demo.mp4" controls="controls" style="max-width: 100%;"></video>
-
-If the player does not show: [handoff-demo.mp4](demo/handoff-demo.mp4)
+![pi-handoff demo](demo/handoff-demo.gif)
 
 ## Install
 
