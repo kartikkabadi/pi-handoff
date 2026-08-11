@@ -34,7 +34,7 @@ Config file: `~/.pi/agent/pi-handoff.json`.
 }
 ```
 
-`thresholdPercent`: `null` means the smart default — models with a 100k+ context window hand off at **100k tokens**; smaller models hand off at **50% of their window**. Set a number (1-100) to override with a percent of the current model's window.
+`thresholdPercent`: `null` means the smart default: models with a 100k+ context window hand off at **100k tokens**; smaller models hand off at **50% of their window**. Set a number (1-100) to override with a percent of the current model's window.
 
 `mode`: when the check runs.
 - `turn` (default): after a full turn completes.
@@ -50,9 +50,9 @@ Config file: `~/.pi/agent/pi-handoff.json`.
 
 When the context crosses the threshold, the extension generates the handoff document in the background and saves it as `handoff-ready-<session-id>.md` in the OS temp dir (`$TMPDIR/pi-handoff/`). It notifies you once. The next `/handoff` switches instantly using that document (no regeneration) and automatically sends "Continue the work from the handoff document." so the fresh session's agent resumes immediately. A copy of the handoff is kept at `$TMPDIR/pi-handoff/handoff-<session-id>.md`. One handoff per crossing; the trigger resets when context drops below the threshold (for example after compaction).
 
-Pruning: when a session starts, all handoff files from other sessions are deleted — only the current session's files survive. The prepared document is also deleted the moment `/handoff` consumes it.
+Pruning: when a session starts, all handoff files from other sessions are deleted; only the current session's files survive. The prepared document is also deleted the moment `/handoff` consumes it.
 
-A note on "auto": pi's extension API gives event hooks no session-switch ability (`newSession` is command-only), so the actual switch stays a `/handoff` keystroke. Everything else — detection, document generation, saving — is automatic. Full zero-keystroke switching would need a pi fork (OMP-style).
+A note on "auto": pi's extension API gives event hooks no session-switch ability (`newSession` is command-only), so the actual switch stays a `/handoff` keystroke. Everything else (detection, document generation, saving) is automatic. Full zero-keystroke switching would need a pi fork (OMP-style).
 
 ## How it works
 
@@ -60,13 +60,20 @@ A note on "auto": pi's extension API gives event hooks no session-switch ability
 2. A brand-new session starts immediately. The old transcript is not carried over. The only context in the new session is the handoff document, injected as a custom in-context message wrapped in `<handoff-context>`.
 3. The new session links to the old one via `parentSession`, so the session tree keeps the history.
 
-When the auto-run threshold is crossed, step 1 happens in the background and the document is saved next to the config; the next `/handoff` picks it up and runs steps 2-3 instantly.
+When the auto-run threshold is crossed, step 1 happens in the background and the document is saved in the OS temp dir; the next `/handoff` picks it up (when the session has not grown since) and runs steps 2-3 instantly.
 
 If generation fails or is cancelled, nothing changes and the current session stays intact.
 
 ## Notes for developers
 
 Runs entirely on pi's bundled modules (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-tui`). No network, no npm runtime dependencies.
+
+Checks:
+
+```bash
+bun test.ts           # config + pruning logic
+bunx tsc --noEmit     # typecheck (resolves the @earendil-works packages from a pi install)
+```
 
 ## Credits
 

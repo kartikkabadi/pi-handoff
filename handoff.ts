@@ -1,5 +1,5 @@
 /**
- * /handoff — OMP-style session handoff for pi
+ * /handoff, OMP-style session handoff for pi
  *
  * Port of Oh My Pi's (can1357/oh-my-pi) /handoff command to a vanilla pi
  * extension:
@@ -8,7 +8,7 @@
  *      writes a structured handoff document (Goal / Progress / Key Decisions /
  *      Critical Context / Next Steps).
  *   2. A brand-new session starts immediately. The old transcript is NOT
- *      carried over — the only context in the new session is the handoff
+ *      carried over. The only context in the new session is the handoff
  *      document, injected as a custom in-context message:
  *
  *        <handoff-context>
@@ -24,22 +24,22 @@
  * Persistence note: like any brand-new pi session, the new session file is
  * written only after the first assistant message arrives in it (pi's
  * SessionManager no-assistant guard). Until then the handoff doc lives in
- * memory only — if pi exits before the first reply, the new session is lost.
+ * memory only. If pi exits before the first reply, the new session is lost.
  * OMP forces ensureOnDisk() here; pi's public SessionManager exposes no
  * flush, so this is inherited from pi's newSession contract.
  *
  * Usage:
- *   /handoff                          (bare — general handoff)
+ *   /handoff                          (bare: general handoff)
  *   /handoff focus on the billing API (optional focus instructions)
  *   /handoff settings                 (slider: threshold % + trigger mode)
  *   /handoff settings 85              (set the percent directly)
  *   /handoff settings mode early      (set the trigger mode)
  *
  * Auto-run: when the context crosses the threshold, the extension generates
- * the handoff document in the background and saves it as
- * handoff-ready-<session-id>.md next to the config. The next /handoff
- * switches instantly using that document. Pi's extension API gives event
- * hooks no session-switch ability, so the switch itself stays a command.
+ * the handoff document in the background and saves it in the OS temp dir.
+ * The next /handoff switches instantly using that document (when the session
+ * has not grown since). Pi's extension API gives event hooks no session-
+ * switch ability, so the switch itself stays a command.
  *
  * Esc during generation cancels. The loader is TUI-only; in non-interactive
  * modes generation runs headless with the same semantics.
@@ -56,7 +56,7 @@ import { BorderedLoader, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
 // ---------------------------------------------------------------------------
-// Config — a single threshold, stored next to pi's own settings.
+// Config: a single threshold, stored next to pi's own settings.
 // ---------------------------------------------------------------------------
 
 const AGENT_DIR = process.env.PI_CODING_AGENT_DIR
@@ -108,6 +108,7 @@ export function thresholdTokens(config: HandoffConfig, window: number): number {
 
 // The slider start percent that matches the smart default for this window.
 export function defaultPercent(window: number): number {
+	if (!window || window <= 0) return 50;
 	return Math.round((thresholdTokens({ thresholdPercent: null, mode: "turn" }, window) / window) * 100);
 }
 
@@ -122,6 +123,24 @@ const TMP_DIR = join(tmpdir(), "pi-handoff");
 // Path of the auto-prepared handoff document for a session.
 function readyDocPath(sessionId: string): string {
 	return join(TMP_DIR, `handoff-ready-${sessionId}.md`);
+}
+
+// Snapshot marker: the leaf entry id at generation time. /handoff reuses the
+// prepared document only when the session has not grown since.
+function readyMetaPath(sessionId: string): string {
+	return join(TMP_DIR, `handoff-ready-${sessionId}.meta.json`);
+}
+
+// Delete handoff files from other sessions; keep only the current session's.
+export function pruneOtherSessions(sessionId: string): void {
+	try {
+		for (const file of readdirSync(TMP_DIR)) {
+			if (!file.startsWith("handoff-") || file.includes(sessionId)) continue;
+			rmSync(join(TMP_DIR, file), { force: true });
+		}
+	} catch {
+		// no temp dir yet: nothing to prune
+	}
 }
 
 // Path of the final handoff document, kept after every switch for review.
@@ -198,7 +217,7 @@ class SettingsSlider {
 }
 
 // Minimal framing prompt; the document template below carries the behavior.
-const SYSTEM_PROMPT = `You are an AI coding assistant. Given a conversation history, write a handoff document for another instance of yourself so it can continue the work without access to this conversation.`;
+const SYSTEM_PROMPT = `You are an AI coding assistant. Given a conversation history, write a handoff document for another instance of yourself so it can continue the work without access to this conversation. Redact API keys, passwords, tokens, and credentials; reference them by name only.`;
 
 // OMP's handoff-document template (packages/agent/src/compaction/prompts/handoff-document.md), verbatim.
 const HANDOFF_DOCUMENT_PROMPT = `<critical>
@@ -316,7 +335,7 @@ async function generateHandoffText(
 	signal?: AbortSignal,
 ): Promise<HandoffGeneration> {
 	const llmMessages = convertToLlm(messages);
-	// The handoff instruction is a trailing user message — mirrors OMP,
+	// The handoff instruction is a trailing user message, mirroring OMP,
 	// which appends it to a snapshot of the live messages.
 	const requestMessages: Message[] = [
 		...llmMessages,
@@ -363,9 +382,10 @@ async function generateHandoffText(
 // Auto-run: when the context crosses the threshold, generate the handoff
 // document in the background and save it for the next /handoff. Event hooks
 // cannot start sessions (newSession is command-only in pi's extension API),
-// so the switch itself stays a /handoff keystroke — but it is instant.
+// so the switch itself stays a /handoff keystroke, but it is instant.
 async function maybeAutoHandoff(ctx: ExtensionContext, tokens: number): Promise<void> {
 	if (!tokens || handoffRunning) return;
+	if (!ctx.model) return;
 	const config = readConfig();
 	const usage = ctx.getContextUsage();
 	const window = usage?.contextWindow ?? ctx.model?.contextWindow ?? DEFAULT_WINDOW;
@@ -378,7 +398,6 @@ async function maybeAutoHandoff(ctx: ExtensionContext, tokens: number): Promise<
 	triggeredOverThreshold = true;
 	handoffRunning = true;
 	try {
-		if (!ctx.model) return;
 		const messages = getHandoffMessages(ctx.sessionManager.getBranch());
 		if (messages.length < 2) return;
 		const generation = await generateHandoffText(
@@ -395,9 +414,15 @@ async function maybeAutoHandoff(ctx: ExtensionContext, tokens: number): Promise<
 			return;
 		}
 		mkdirSync(TMP_DIR, { recursive: true });
-		writeFileSync(readyDocPath(ctx.sessionManager.getSessionId()), generation.text, "utf8");
+		const sessionId = ctx.sessionManager.getSessionId();
+		writeFileSync(readyDocPath(sessionId), generation.text, "utf8");
+		writeFileSync(
+			readyMetaPath(sessionId),
+			JSON.stringify({ leafId: ctx.sessionManager.getLeafId() ?? null }),
+			"utf8",
+		);
 		ctx.ui.notify(
-			`Context crossed the threshold (${fmt(tokens)} tokens, threshold ${fmt(threshold)}). Handoff document ready — run /handoff to switch.`,
+			`Context crossed the threshold (${fmt(tokens)} tokens, threshold ${fmt(threshold)}). Handoff document ready: run /handoff to switch.`,
 			"warning",
 		);
 	} catch (error) {
@@ -493,12 +518,22 @@ export default function (pi: ExtensionAPI) {
 
 			const focus = args.trim() || undefined;
 			const currentSessionFile = ctx.sessionManager.getSessionFile();
-			const readyPath = readyDocPath(ctx.sessionManager.getSessionId());
+			const sessionId = ctx.sessionManager.getSessionId();
+			const readyPath = readyDocPath(sessionId);
+			const readyMeta = readyMetaPath(sessionId);
 
-			// Use the auto-prepared document when one exists for this session.
+			// Use the auto-prepared document when one exists for this session and
+			// the session has not grown since it was generated.
 			let handoffText: string | undefined;
-			if (existsSync(readyPath)) {
-				handoffText = readFileSync(readyPath, "utf8");
+			try {
+				if (existsSync(readyPath) && existsSync(readyMeta)) {
+					const meta = JSON.parse(readFileSync(readyMeta, "utf8"));
+					if (meta.leafId === ctx.sessionManager.getLeafId()) {
+						handoffText = readFileSync(readyPath, "utf8");
+					}
+				}
+			} catch {
+				// unreadable marker: regenerate
 			}
 
 			if (handoffText === undefined) {
@@ -554,26 +589,17 @@ export default function (pi: ExtensionAPI) {
 			} else {
 				// Keep a reviewable copy of every handoff in the temp dir.
 				mkdirSync(TMP_DIR, { recursive: true });
-				writeFileSync(finalDocPath(ctx.sessionManager.getSessionId()), handoffText!, "utf8");
-				if (existsSync(readyPath)) {
-					rmSync(readyPath, { force: true }); // the prepared document was consumed
-				}
+				writeFileSync(finalDocPath(sessionId), handoffText!, "utf8");
+				rmSync(readyPath, { force: true }); // the prepared document was consumed
+				rmSync(readyMeta, { force: true });
 			}
 		},
 	});
 
 	// Prune on session start: handoff files from other sessions are deleted.
 	// Only files belonging to the current session survive.
-	pi.on("session_start", (event, ctx) => {
-		try {
-			const sessionId = ctx.sessionManager.getSessionId();
-			for (const file of readdirSync(TMP_DIR)) {
-				if (!file.startsWith("handoff-") || file.includes(sessionId)) continue;
-				rmSync(join(TMP_DIR, file), { force: true });
-			}
-		} catch {
-			// no temp dir yet — nothing to prune
-		}
+	pi.on("session_start", (_event, ctx) => {
+		pruneOtherSessions(ctx.sessionManager.getSessionId());
 	});
 
 	// Auto-run. Mode "turn" (default): check after each full turn. Mode
