@@ -31,13 +31,12 @@
  * Usage:
  *   /handoff                          (bare — general handoff)
  *   /handoff focus on the billing API (optional focus instructions)
- *   /handoff settings                 (open the threshold config)
+ *   /handoff settings                 (view or set the threshold in the TUI)
  *
  * Esc during generation cancels. The loader is TUI-only; in non-interactive
  * modes generation runs headless with the same semantics.
  */
 
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -72,6 +71,10 @@ export function ensureConfig(): { threshold: number } {
 		writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf8");
 	}
 	return config;
+}
+
+export function writeConfig(threshold: number): void {
+	writeFileSync(CONFIG_PATH, JSON.stringify({ threshold }, null, 2) + "\n", "utf8");
 }
 
 // Warn once per crossing of the threshold; reset when usage drops (compaction).
@@ -192,12 +195,32 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("handoff", {
 		description: "Hand off session context to a new session. /handoff settings opens the config",
 		handler: async (args, ctx) => {
-			if (args.trim().toLowerCase() === "settings") {
+			if (args.trim().toLowerCase().startsWith("settings")) {
 				const config = ensureConfig();
-				ctx.ui.notify(`Config: ${CONFIG_PATH} (threshold ${config.threshold})`, "info");
-				if (process.platform === "darwin") {
-					spawn("open", ["-e", CONFIG_PATH]);
+				const rest = args.trim().slice("settings".length).trim();
+				if (rest !== "") {
+					const value = Number(rest);
+					if (!Number.isFinite(value) || value <= 0) {
+						ctx.ui.notify(`Invalid threshold: ${rest}`, "error");
+						return;
+					}
+					writeConfig(value);
+					ctx.ui.notify(`Threshold set to ${value.toLocaleString()} tokens`, "info");
+					return;
 				}
+				if (ctx.mode !== "tui" && ctx.mode !== "rpc") {
+					ctx.ui.notify(`Config: ${CONFIG_PATH} (threshold ${config.threshold})`, "info");
+					return;
+				}
+				const answer = await ctx.ui.input("Handoff threshold (context tokens)", String(config.threshold));
+				if (answer === undefined) return;
+				const value = Number(answer.trim());
+				if (!Number.isFinite(value) || value <= 0) {
+					ctx.ui.notify(`Invalid threshold: ${answer}`, "error");
+					return;
+				}
+				writeConfig(value);
+				ctx.ui.notify(`Threshold set to ${value.toLocaleString()} tokens`, "info");
 				return;
 			}
 			if (ctx.mode !== "tui" && ctx.mode !== "rpc") {
