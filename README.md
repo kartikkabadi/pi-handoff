@@ -10,7 +10,7 @@ One `/handoff` command reads the current session, writes a structured handoff do
 pi install git:github.com/kartikkabadi/pi-handoff
 ```
 
-No `@ref` means the package tracks the latest on `main`; run `pi update --extensions` to pull updates. Add `@tag` (for example `@v0.2.0`) to pin a specific release instead.
+No `@ref` means the package tracks the latest on `main`; run `pi update --extensions` to pull updates. Add `@tag` (for example `@v0.4.0`) to pin a specific release instead.
 
 Then restart pi or run `/reload`. To try it without installing: `pi -e git:github.com/kartikkabadi/pi-handoff`.
 
@@ -20,8 +20,6 @@ Then restart pi or run `/reload`. To try it without installing: `pi -e git:githu
 | --- | --- |
 | `/handoff` | General handoff |
 | `/handoff focus on the billing API` | Handoff with extra focus instructions appended to the prompt |
-| `/handoff settings` | Show the threshold in a TUI dialog and change it |
-| `/handoff settings 120000` | Set the threshold directly |
 
 `Esc` during generation cancels. The loader is TUI-only; in non-interactive modes generation runs headless with the same semantics.
 
@@ -60,11 +58,13 @@ A note on "auto": pi's extension API gives event hooks no session-switch ability
 2. A brand-new session starts immediately. The old transcript is not carried over. The only context in the new session is the handoff document, injected as a custom in-context message wrapped in `<handoff-context>`.
 3. The new session links to the old one via `parentSession`, so the session tree keeps the history.
 
+When the auto-run threshold is crossed, step 1 happens in the background and the document is saved next to the config; the next `/handoff` picks it up and runs steps 2-3 instantly.
+
 If generation fails or is cancelled, nothing changes and the current session stays intact.
 
 ## Notes for developers
 
-Runs entirely on pi's bundled modules (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, `@earendil-works/pi-agent-core`). No network, no npm runtime dependencies.
+Runs entirely on pi's bundled modules (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-tui`). No network, no npm runtime dependencies.
 
 ## Credits
 
