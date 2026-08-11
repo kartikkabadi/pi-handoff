@@ -4,6 +4,12 @@ OMP-style session handoff for the [pi coding agent](https://github.com/earendil-
 
 One `/handoff` command reads the current session, writes a structured handoff document (Goal / Progress / Key Decisions / Critical Context / Next Steps), and starts a brand-new session that continues the work with only that document as context. The old session is linked as the parent, so the session tree keeps the history.
 
+## Demo
+
+The full flow: the session crosses the threshold, the document is prepared in the background, `/handoff` switches instantly, and the new session continues with the handoff as context.
+
+<video src="demo/handoff-demo.mov" controls="controls" style="max-width: 100%;"></video>
+
 ## Install
 
 ```bash
