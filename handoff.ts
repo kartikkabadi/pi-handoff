@@ -560,9 +560,15 @@ export default function (pi: ExtensionAPI) {
 					replacementCtx.ui.notify("New session started with handoff context", "info");
 					// Auto-continue: send a follow-up so the fresh session's agent
 					// picks up the work from the handoff document immediately.
-					pi.sendUserMessage("Continue the work from the handoff document.", {
-						deliverAs: "followUp",
-					});
+					// Use the replacement ctx, never the captured pi object: pi
+					// invalidates the extension runtime after a session switch.
+					replacementCtx
+						.sendUserMessage("Continue the work from the handoff document.", {
+							deliverAs: "followUp",
+						})
+						.catch((error) => {
+							console.error("Auto-continue failed:", error);
+						});
 				},
 			});
 
