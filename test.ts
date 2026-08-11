@@ -5,7 +5,7 @@ import { join } from "node:path";
 const dir = mkdtempSync(join(tmpdir(), "pi-handoff-test-"));
 process.env.PI_CODING_AGENT_DIR = dir;
 
-const { readConfig, ensureConfig, writeConfig } = await import("./handoff.ts");
+const { readConfig, ensureConfig, writeConfig, fmt } = await import("./handoff.ts");
 
 let failed = 0;
 function assert(name: string, cond: boolean) {
@@ -25,6 +25,8 @@ assert("out-of-range percent falls back to default", readConfig().thresholdPerce
 
 writeFileSync(join(dir, "pi-handoff.json"), "not json");
 assert("corrupt config falls back to default", readConfig().thresholdPercent === 78);
+
+assert("fmt groups the standard way", fmt(1000000) === "1,000,000" && fmt(10000) === "10,000");
 
 rmSync(dir, { recursive: true, force: true });
 process.exit(failed);

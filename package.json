@@ -1,6 +1,6 @@
 {
   "name": "pi-handoff",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "OMP-style session handoff for the pi coding agent. One /handoff command writes a structured handoff document and starts a fresh session that continues the work. Install with pi install.",
   "keywords": ["pi-package", "pi-extension", "handoff", "sessions", "omp"],
   "license": "MIT",

@@ -86,6 +86,11 @@ export function writeConfig(thresholdPercent: number): void {
 	writeFileSync(CONFIG_PATH, JSON.stringify({ thresholdPercent }, null, 2) + "\n", "utf8");
 }
 
+// Fixed locale so numbers always group the standard way: 1,000,000, not 10,00,000.
+export function fmt(n: number): string {
+	return n.toLocaleString("en-US");
+}
+
 // Warn once per crossing of the threshold; reset when usage drops (compaction).
 let warnedOverThreshold = false;
 
@@ -129,8 +134,8 @@ class ThresholdSlider {
 		const barWidth = Math.min(30, Math.max(8, width - 24));
 		const filled = Math.round((this.percent / 100) * barWidth);
 		const bar = "█".repeat(filled) + "░".repeat(Math.max(0, barWidth - filled));
-		const windowLabel = this.window ? this.window.toLocaleString() : "?";
-		const tokenLabel = this.window ? `${tokens.toLocaleString()} tokens` : "window unknown";
+		const windowLabel = this.window ? fmt(this.window) : "?";
+		const tokenLabel = this.window ? `${fmt(tokens)} tokens` : "window unknown";
 		return [
 			truncateToWidth(`Model: ${this.modelName} (${windowLabel} token window)`, width),
 			`[${bar}] ${this.percent}% = ${tokenLabel}`,
@@ -271,14 +276,14 @@ export default function (pi: ExtensionAPI) {
 					const pct = Math.round(value);
 					writeConfig(pct);
 					ctx.ui.notify(
-						`Threshold set to ${pct}% (${Math.round((pct / 100) * window).toLocaleString()} tokens)`,
+						`Threshold set to ${pct}% (${fmt(Math.round((pct / 100) * window))} tokens)`,
 						"info",
 					);
 					return;
 				}
 				if (ctx.mode !== "tui" && ctx.mode !== "rpc") {
 					ctx.ui.notify(
-						`Threshold: ${config.thresholdPercent}% (${Math.round((config.thresholdPercent / 100) * window).toLocaleString()} tokens)`,
+						`Threshold: ${config.thresholdPercent}% (${fmt(Math.round((config.thresholdPercent / 100) * window))} tokens)`,
 						"info",
 					);
 					return;
@@ -303,7 +308,7 @@ export default function (pi: ExtensionAPI) {
 				if (result === null || result === undefined) return; // cancelled
 				writeConfig(result);
 				ctx.ui.notify(
-					`Threshold set to ${result}% (${Math.round((result / 100) * window).toLocaleString()} tokens)`,
+					`Threshold set to ${result}% (${fmt(Math.round((result / 100) * window))} tokens)`,
 					"info",
 				);
 				return;
@@ -439,7 +444,7 @@ export default function (pi: ExtensionAPI) {
 		if (tokens > thresholdTokens && !warnedOverThreshold) {
 			warnedOverThreshold = true;
 			ctx.ui.notify(
-				`Context at ${tokens.toLocaleString()} tokens, over your threshold of ${thresholdPercent}% (${thresholdTokens.toLocaleString()}). Run /handoff to hand off.`,
+				`Context at ${fmt(tokens)} tokens, over your threshold of ${thresholdPercent}% (${fmt(thresholdTokens)}). Run /handoff to hand off.`,
 				"warning",
 			);
 		} else if (tokens <= thresholdTokens) {
