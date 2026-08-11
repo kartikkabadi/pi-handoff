@@ -7,8 +7,10 @@ One `/handoff` command reads the current session, writes a structured handoff do
 ## Install
 
 ```bash
-pi install git:github.com/kartikkabadi/pi-handoff@v0.2.0
+pi install git:github.com/kartikkabadi/pi-handoff
 ```
+
+No `@ref` means the package tracks the latest on `main`; run `pi update --extensions` to pull updates. Add `@tag` (for example `@v0.2.0`) to pin a specific release instead.
 
 Then restart pi or run `/reload`. To try it without installing: `pi -e git:github.com/kartikkabadi/pi-handoff`.
 
