@@ -27,22 +27,22 @@ Then restart pi or run `/reload`. To try it without installing: `pi -e git:githu
 
 ## Settings
 
-Config file: `~/.pi/agent/pi-handoff.json`.
+The threshold is a **percentage of the current model's context window**, so it means the same thing on a 128k model and a 1m model. Config file: `~/.pi/agent/pi-handoff.json`.
 
 ```json
 {
-  "threshold": 100000
+  "thresholdPercent": 78
 }
 ```
 
-`threshold` is the context size in tokens. The settings UI stays in the TUI:
+78% of a 128k window is roughly 100k tokens. The settings UI is a slider in the TUI:
 
 | Command | Action |
 | --- | --- |
-| `/handoff settings` | Shows a dialog with the current threshold; type a new value to change it |
-| `/handoff settings 120000` | Sets the threshold directly, no dialog |
+| `/handoff settings` | Opens a slider: `←/→` steps 1%, `↑/↓` steps 5%, Enter saves, Esc cancels. Shows the model's window and the live token equivalent |
+| `/handoff settings 85` | Sets the percent directly, no slider |
 
-After every turn, the extension warns once when the session context crosses the threshold: "Context at X tokens, over threshold Y. Run /handoff to hand off." Detection only — the handoff itself stays manual. The warning resets when context drops below the threshold (for example after compaction).
+After every turn, the extension warns once when the session context crosses the threshold: "Context at X tokens, over your threshold of Y%. Run /handoff to hand off." Detection only — the handoff itself stays manual, and the check runs at turn boundaries, never mid-turn. The warning resets when context drops below the threshold (for example after compaction).
 
 ## How it works
 

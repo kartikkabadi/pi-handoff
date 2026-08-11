@@ -31,7 +31,8 @@
  * Usage:
  *   /handoff                          (bare — general handoff)
  *   /handoff focus on the billing API (optional focus instructions)
- *   /handoff settings                 (view or set the threshold in the TUI)
+ *   /handoff settings                 (slider: % of the model's context window)
+ *   /handoff settings 85              (set the percent directly)
  *
  * Esc during generation cancels. The loader is TUI-only; in non-interactive
  * modes generation runs headless with the same semantics.
@@ -45,6 +46,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type Message, uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { BorderedLoader, convertToLlm } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
 // ---------------------------------------------------------------------------
 // Config — a single threshold, stored next to pi's own settings.
@@ -54,18 +56,25 @@ const AGENT_DIR = process.env.PI_CODING_AGENT_DIR
 	? process.env.PI_CODING_AGENT_DIR.replace(/^~(?=\/|$)/, homedir())
 	: join(homedir(), ".pi", "agent");
 const CONFIG_PATH = join(AGENT_DIR, "pi-handoff.json");
-const DEFAULT_THRESHOLD = 100000;
+// 78% of a 128k window is roughly 100k tokens — the original default.
+const DEFAULT_THRESHOLD_PERCENT = 78;
+// Used only when the current model reports no context window.
+const DEFAULT_WINDOW = 200000;
 
-export function readConfig(): { threshold: number } {
+export function readConfig(): { thresholdPercent: number } {
 	try {
 		const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-		return { threshold: Number(raw.threshold) || DEFAULT_THRESHOLD };
+		const pct = Number(raw.thresholdPercent);
+		if (Number.isFinite(pct) && pct > 0 && pct <= 100) {
+			return { thresholdPercent: Math.round(pct) };
+		}
 	} catch {
-		return { threshold: DEFAULT_THRESHOLD };
+		// missing or unreadable — fall through to the default
 	}
+	return { thresholdPercent: DEFAULT_THRESHOLD_PERCENT };
 }
 
-export function ensureConfig(): { threshold: number } {
+export function ensureConfig(): { thresholdPercent: number } {
 	const config = readConfig();
 	if (!existsSync(CONFIG_PATH)) {
 		writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf8");
@@ -73,12 +82,66 @@ export function ensureConfig(): { threshold: number } {
 	return config;
 }
 
-export function writeConfig(threshold: number): void {
-	writeFileSync(CONFIG_PATH, JSON.stringify({ threshold }, null, 2) + "\n", "utf8");
+export function writeConfig(thresholdPercent: number): void {
+	writeFileSync(CONFIG_PATH, JSON.stringify({ thresholdPercent }, null, 2) + "\n", "utf8");
 }
 
 // Warn once per crossing of the threshold; reset when usage drops (compaction).
 let warnedOverThreshold = false;
+
+// Arrow-key slider. Left/right step 1%, up/down step 5%. Enter saves, Esc cancels.
+class ThresholdSlider {
+	private percent: number;
+
+	constructor(
+		private window: number,
+		private modelName: string,
+		initial: number,
+	) {
+		this.percent = initial;
+	}
+
+	public onSave?: (percent: number) => void;
+	public onCancel?: () => void;
+
+	handleInput(data: string): void {
+		if (matchesKey(data, Key.left)) {
+			this.change(-1);
+		} else if (matchesKey(data, Key.right)) {
+			this.change(1);
+		} else if (matchesKey(data, Key.up)) {
+			this.change(5);
+		} else if (matchesKey(data, Key.down)) {
+			this.change(-5);
+		} else if (matchesKey(data, Key.enter)) {
+			this.onSave?.(this.percent);
+		} else if (matchesKey(data, Key.escape)) {
+			this.onCancel?.();
+		}
+	}
+
+	private change(delta: number): void {
+		this.percent = Math.min(100, Math.max(1, this.percent + delta));
+	}
+
+	render(width: number): string[] {
+		const tokens = Math.round((this.percent / 100) * this.window);
+		const barWidth = Math.min(30, Math.max(8, width - 24));
+		const filled = Math.round((this.percent / 100) * barWidth);
+		const bar = "█".repeat(filled) + "░".repeat(Math.max(0, barWidth - filled));
+		const windowLabel = this.window ? this.window.toLocaleString() : "?";
+		const tokenLabel = this.window ? `${tokens.toLocaleString()} tokens` : "window unknown";
+		return [
+			truncateToWidth(`Model: ${this.modelName} (${windowLabel} token window)`, width),
+			`[${bar}] ${this.percent}% = ${tokenLabel}`,
+			"←/→ 1% · ↑/↓ 5% · Enter save · Esc cancel",
+		];
+	}
+
+	invalidate(): void {
+		// render is cheap; nothing to cache
+	}
+}
 
 // Minimal framing prompt; the document template below carries the behavior.
 const SYSTEM_PROMPT = `You are an AI coding assistant. Given a conversation history, write a handoff document for another instance of yourself so it can continue the work without access to this conversation.`;
@@ -197,30 +260,52 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			if (args.trim().toLowerCase().startsWith("settings")) {
 				const config = ensureConfig();
+				const window = ctx.model?.contextWindow ?? DEFAULT_WINDOW;
 				const rest = args.trim().slice("settings".length).trim();
 				if (rest !== "") {
 					const value = Number(rest);
-					if (!Number.isFinite(value) || value <= 0) {
-						ctx.ui.notify(`Invalid threshold: ${rest}`, "error");
+					if (!Number.isFinite(value) || value <= 0 || value > 100) {
+						ctx.ui.notify(`Invalid threshold percent: ${rest} (1-100)`, "error");
 						return;
 					}
-					writeConfig(value);
-					ctx.ui.notify(`Threshold set to ${value.toLocaleString()} tokens`, "info");
+					const pct = Math.round(value);
+					writeConfig(pct);
+					ctx.ui.notify(
+						`Threshold set to ${pct}% (${Math.round((pct / 100) * window).toLocaleString()} tokens)`,
+						"info",
+					);
 					return;
 				}
 				if (ctx.mode !== "tui" && ctx.mode !== "rpc") {
-					ctx.ui.notify(`Config: ${CONFIG_PATH} (threshold ${config.threshold})`, "info");
+					ctx.ui.notify(
+						`Threshold: ${config.thresholdPercent}% (${Math.round((config.thresholdPercent / 100) * window).toLocaleString()} tokens)`,
+						"info",
+					);
 					return;
 				}
-				const answer = await ctx.ui.input("Handoff threshold (context tokens)", String(config.threshold));
-				if (answer === undefined) return;
-				const value = Number(answer.trim());
-				if (!Number.isFinite(value) || value <= 0) {
-					ctx.ui.notify(`Invalid threshold: ${answer}`, "error");
-					return;
-				}
-				writeConfig(value);
-				ctx.ui.notify(`Threshold set to ${value.toLocaleString()} tokens`, "info");
+				const result = await ctx.ui.custom<number | null>((tui, _theme, _kb, done) => {
+					const slider = new ThresholdSlider(
+						window,
+						ctx.model?.name ?? "unknown",
+						config.thresholdPercent,
+					);
+					slider.onSave = done;
+					slider.onCancel = () => done(null);
+					return {
+						render: (width) => slider.render(width),
+						handleInput: (data) => {
+							slider.handleInput(data);
+							tui.requestRender();
+						},
+						invalidate: () => slider.invalidate(),
+					};
+				});
+				if (result === null || result === undefined) return; // cancelled
+				writeConfig(result);
+				ctx.ui.notify(
+					`Threshold set to ${result}% (${Math.round((result / 100) * window).toLocaleString()} tokens)`,
+					"info",
+				);
 				return;
 			}
 			if (ctx.mode !== "tui" && ctx.mode !== "rpc") {
@@ -348,14 +433,16 @@ export default function (pi: ExtensionAPI) {
 		const usage = message.usage;
 		const tokens = (usage?.input ?? 0) + (usage?.cacheRead ?? 0);
 		if (!tokens) return;
-		const { threshold } = readConfig();
-		if (tokens > threshold && !warnedOverThreshold) {
+		const { thresholdPercent } = readConfig();
+		const window = ctx.model?.contextWindow ?? DEFAULT_WINDOW;
+		const thresholdTokens = Math.round((thresholdPercent / 100) * window);
+		if (tokens > thresholdTokens && !warnedOverThreshold) {
 			warnedOverThreshold = true;
 			ctx.ui.notify(
-				`Context at ${tokens.toLocaleString()} tokens, over threshold ${threshold.toLocaleString()}. Run /handoff to hand off.`,
+				`Context at ${tokens.toLocaleString()} tokens, over your threshold of ${thresholdPercent}% (${thresholdTokens.toLocaleString()}). Run /handoff to hand off.`,
 				"warning",
 			);
-		} else if (tokens <= threshold) {
+		} else if (tokens <= thresholdTokens) {
 			warnedOverThreshold = false;
 		}
 	});

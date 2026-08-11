@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,17 +14,17 @@ function assert(name: string, cond: boolean) {
 }
 
 const cfg = ensureConfig();
-assert("ensureConfig creates file with default 100000", cfg.threshold === 100000 && existsSync(join(dir, "pi-handoff.json")));
-assert("readConfig reads default back", readConfig().threshold === 100000);
+assert("ensureConfig creates file with default 78%", cfg.thresholdPercent === 78 && existsSync(join(dir, "pi-handoff.json")));
+assert("readConfig reads default back", readConfig().thresholdPercent === 78);
 
-writeFileSync(join(dir, "pi-handoff.json"), '{"threshold": 80000}\n');
-assert("readConfig honors custom threshold", readConfig().threshold === 80000);
+writeConfig(85);
+assert("writeConfig persists and reads back", readConfig().thresholdPercent === 85);
 
-writeConfig(120000);
-assert("writeConfig persists and reads back", readConfig().threshold === 120000);
+writeFileSync(join(dir, "pi-handoff.json"), '{"thresholdPercent": 150}\n');
+assert("out-of-range percent falls back to default", readConfig().thresholdPercent === 78);
 
 writeFileSync(join(dir, "pi-handoff.json"), "not json");
-assert("corrupt config falls back to default", readConfig().threshold === 100000);
+assert("corrupt config falls back to default", readConfig().thresholdPercent === 78);
 
 rmSync(dir, { recursive: true, force: true });
 process.exit(failed);
