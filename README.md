@@ -60,7 +60,7 @@ A note on "auto": pi's extension API gives event hooks no session-switch ability
 2. A brand-new session starts immediately. The old transcript is not carried over. The only context in the new session is the handoff document, injected as a custom in-context message wrapped in `<handoff-context>`.
 3. The new session links to the old one via `parentSession`, so the session tree keeps the history.
 
-When the auto-run threshold is crossed, step 1 happens in the background and the document is saved in the OS temp dir; the next `/handoff` picks it up (when the session has not grown since) and runs steps 2-3 instantly.
+When the auto-run threshold is crossed, step 1 happens in the background and the document is saved in the OS temp dir; the next `/handoff` picks it up and runs steps 2-3 instantly, no loader. The document is a snapshot of the conversation at the crossing; anything after the crossing stays in the old session, which is kept as the parent.
 
 If generation fails or is cancelled, nothing changes and the current session stays intact.
 

@@ -37,9 +37,9 @@
  *
  * Auto-run: when the context crosses the threshold, the extension generates
  * the handoff document in the background and saves it in the OS temp dir.
- * The next /handoff switches instantly using that document (when the session
- * has not grown since). Pi's extension API gives event hooks no session-
- * switch ability, so the switch itself stays a command.
+ * The next /handoff switches instantly using that document. Pi's extension
+ * API gives event hooks no session-switch ability, so the switch itself
+ * stays a command.
  *
  * Esc during generation cancels. The loader is TUI-only; in non-interactive
  * modes generation runs headless with the same semantics.
@@ -123,12 +123,6 @@ const TMP_DIR = join(tmpdir(), "pi-handoff");
 // Path of the auto-prepared handoff document for a session.
 function readyDocPath(sessionId: string): string {
 	return join(TMP_DIR, `handoff-ready-${sessionId}.md`);
-}
-
-// Snapshot marker: the leaf entry id at generation time. /handoff reuses the
-// prepared document only when the session has not grown since.
-function readyMetaPath(sessionId: string): string {
-	return join(TMP_DIR, `handoff-ready-${sessionId}.meta.json`);
 }
 
 // Delete handoff files from other sessions; keep only the current session's.
@@ -416,11 +410,6 @@ async function maybeAutoHandoff(ctx: ExtensionContext, tokens: number): Promise<
 		mkdirSync(TMP_DIR, { recursive: true });
 		const sessionId = ctx.sessionManager.getSessionId();
 		writeFileSync(readyDocPath(sessionId), generation.text, "utf8");
-		writeFileSync(
-			readyMetaPath(sessionId),
-			JSON.stringify({ leafId: ctx.sessionManager.getLeafId() ?? null }),
-			"utf8",
-		);
 		ctx.ui.notify(
 			`Context crossed the threshold (${fmt(tokens)} tokens, threshold ${fmt(threshold)}). Handoff document ready: run /handoff to switch.`,
 			"warning",
@@ -520,20 +509,13 @@ export default function (pi: ExtensionAPI) {
 			const currentSessionFile = ctx.sessionManager.getSessionFile();
 			const sessionId = ctx.sessionManager.getSessionId();
 			const readyPath = readyDocPath(sessionId);
-			const readyMeta = readyMetaPath(sessionId);
 
-			// Use the auto-prepared document when one exists for this session and
-			// the session has not grown since it was generated.
+			// Use the auto-prepared document when one exists for this session.
+			// It is a snapshot of the conversation at the crossing; work after the
+			// crossing stays in the old session (kept as the parent).
 			let handoffText: string | undefined;
-			try {
-				if (existsSync(readyPath) && existsSync(readyMeta)) {
-					const meta = JSON.parse(readFileSync(readyMeta, "utf8"));
-					if (meta.leafId === ctx.sessionManager.getLeafId()) {
-						handoffText = readFileSync(readyPath, "utf8");
-					}
-				}
-			} catch {
-				// unreadable marker: regenerate
+			if (existsSync(readyPath)) {
+				handoffText = readFileSync(readyPath, "utf8");
 			}
 
 			if (handoffText === undefined) {
@@ -591,7 +573,6 @@ export default function (pi: ExtensionAPI) {
 				mkdirSync(TMP_DIR, { recursive: true });
 				writeFileSync(finalDocPath(sessionId), handoffText!, "utf8");
 				rmSync(readyPath, { force: true }); // the prepared document was consumed
-				rmSync(readyMeta, { force: true });
 			}
 		},
 	});
