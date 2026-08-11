@@ -31,15 +31,51 @@
  * Usage:
  *   /handoff                          (bare — general handoff)
  *   /handoff focus on the billing API (optional focus instructions)
+ *   /handoff settings                 (open the threshold config)
  *
  * Esc during generation cancels. The loader is TUI-only; in non-interactive
  * modes generation runs headless with the same semantics.
  */
 
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type Message, uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { BorderedLoader, convertToLlm } from "@earendil-works/pi-coding-agent";
+
+// ---------------------------------------------------------------------------
+// Config — a single threshold, stored next to pi's own settings.
+// ---------------------------------------------------------------------------
+
+const AGENT_DIR = process.env.PI_CODING_AGENT_DIR
+	? process.env.PI_CODING_AGENT_DIR.replace(/^~(?=\/|$)/, homedir())
+	: join(homedir(), ".pi", "agent");
+const CONFIG_PATH = join(AGENT_DIR, "pi-handoff.json");
+const DEFAULT_THRESHOLD = 100000;
+
+export function readConfig(): { threshold: number } {
+	try {
+		const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+		return { threshold: Number(raw.threshold) || DEFAULT_THRESHOLD };
+	} catch {
+		return { threshold: DEFAULT_THRESHOLD };
+	}
+}
+
+export function ensureConfig(): { threshold: number } {
+	const config = readConfig();
+	if (!existsSync(CONFIG_PATH)) {
+		writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf8");
+	}
+	return config;
+}
+
+// Warn once per crossing of the threshold; reset when usage drops (compaction).
+let warnedOverThreshold = false;
 
 // Minimal framing prompt; the document template below carries the behavior.
 const SYSTEM_PROMPT = `You are an AI coding assistant. Given a conversation history, write a handoff document for another instance of yourself so it can continue the work without access to this conversation.`;
@@ -154,8 +190,16 @@ function getHandoffMessages(branch: SessionEntry[]): AgentMessage[] {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("handoff", {
-		description: "Hand off session context to a new session",
+		description: "Hand off session context to a new session. /handoff settings opens the config",
 		handler: async (args, ctx) => {
+			if (args.trim().toLowerCase() === "settings") {
+				const config = ensureConfig();
+				ctx.ui.notify(`Config: ${CONFIG_PATH} (threshold ${config.threshold})`, "info");
+				if (process.platform === "darwin") {
+					spawn("open", ["-e", CONFIG_PATH]);
+				}
+				return;
+			}
 			if (ctx.mode !== "tui" && ctx.mode !== "rpc") {
 				ctx.ui.notify("/handoff requires interactive mode", "error");
 				return;
@@ -271,5 +315,25 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("New session cancelled", "info");
 			}
 		},
+	});
+
+	// Auto-watch: after each turn, warn once when context crosses the
+	// configured threshold. Detection only; the actual handoff stays manual.
+	pi.on("turn_end", (event, ctx) => {
+		const message = event.message;
+		if (message.role !== "assistant") return;
+		const usage = message.usage;
+		const tokens = (usage?.input ?? 0) + (usage?.cacheRead ?? 0);
+		if (!tokens) return;
+		const { threshold } = readConfig();
+		if (tokens > threshold && !warnedOverThreshold) {
+			warnedOverThreshold = true;
+			ctx.ui.notify(
+				`Context at ${tokens.toLocaleString()} tokens, over threshold ${threshold.toLocaleString()}. Run /handoff to hand off.`,
+				"warning",
+			);
+		} else if (tokens <= threshold) {
+			warnedOverThreshold = false;
+		}
 	});
 }

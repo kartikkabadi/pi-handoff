@@ -7,7 +7,7 @@ One `/handoff` command reads the current session, writes a structured handoff do
 ## Install
 
 ```bash
-pi install git:github.com/kartikkabadi/pi-handoff@v0.1.0
+pi install git:github.com/kartikkabadi/pi-handoff@v0.2.0
 ```
 
 Then restart pi or run `/reload`. To try it without installing: `pi -e git:github.com/kartikkabadi/pi-handoff`.
@@ -18,8 +18,21 @@ Then restart pi or run `/reload`. To try it without installing: `pi -e git:githu
 | --- | --- |
 | `/handoff` | General handoff |
 | `/handoff focus on the billing API` | Handoff with extra focus instructions appended to the prompt |
+| `/handoff settings` | Create if needed and open the config file |
 
 `Esc` during generation cancels. The loader is TUI-only; in non-interactive modes generation runs headless with the same semantics.
+
+## Settings
+
+Config file: `~/.pi/agent/pi-handoff.json`. `/handoff settings` creates it if missing and opens it (TextEdit on macOS).
+
+```json
+{
+  "threshold": 100000
+}
+```
+
+`threshold` is the context size in tokens. After every turn, the extension warns once when the session context crosses it: "Context at X tokens, over threshold Y. Run /handoff to hand off." Detection only — the handoff itself stays manual. The warning resets when context drops below the threshold (for example after compaction).
 
 ## How it works
 
