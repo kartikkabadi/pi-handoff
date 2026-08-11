@@ -45,8 +45,8 @@
  * modes generation runs headless with the same semantics.
  */
 
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -116,9 +116,17 @@ export function fmt(n: number): string {
 	return n.toLocaleString("en-US");
 }
 
+// Handoff documents live in the OS temp dir; the OS cleans them up.
+const TMP_DIR = join(tmpdir(), "pi-handoff");
+
 // Path of the auto-prepared handoff document for a session.
 function readyDocPath(sessionId: string): string {
-	return join(AGENT_DIR, `handoff-ready-${sessionId}.md`);
+	return join(TMP_DIR, `handoff-ready-${sessionId}.md`);
+}
+
+// Path of the final handoff document, kept after every switch for review.
+function finalDocPath(sessionId: string): string {
+	return join(TMP_DIR, `handoff-${sessionId}.md`);
 }
 
 // Auto-run state: one handoff per crossing; reset when usage drops below the threshold.
@@ -386,6 +394,7 @@ async function maybeAutoHandoff(ctx: ExtensionContext, tokens: number): Promise<
 			triggeredOverThreshold = false; // allow a retry next check
 			return;
 		}
+		mkdirSync(TMP_DIR, { recursive: true });
 		writeFileSync(readyDocPath(ctx.sessionManager.getSessionId()), generation.text, "utf8");
 		ctx.ui.notify(
 			`Context crossed the threshold (${fmt(tokens)} tokens, threshold ${fmt(threshold)}). Handoff document ready — run /handoff to switch.`,
@@ -542,8 +551,13 @@ export default function (pi: ExtensionAPI) {
 
 			if (result.cancelled) {
 				ctx.ui.notify("New session cancelled", "info");
-			} else if (existsSync(readyPath)) {
-				rmSync(readyPath, { force: true }); // the document was consumed
+			} else {
+				// Keep a reviewable copy of every handoff in the temp dir.
+				mkdirSync(TMP_DIR, { recursive: true });
+				writeFileSync(finalDocPath(ctx.sessionManager.getSessionId()), handoffText!, "utf8");
+				if (existsSync(readyPath)) {
+					rmSync(readyPath, { force: true }); // the prepared document was consumed
+				}
 			}
 		},
 	});
