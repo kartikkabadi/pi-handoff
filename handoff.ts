@@ -31,20 +31,27 @@
  * Usage:
  *   /handoff                          (bare — general handoff)
  *   /handoff focus on the billing API (optional focus instructions)
- *   /handoff settings                 (slider: % of the model's context window)
+ *   /handoff settings                 (slider: threshold % + trigger mode)
  *   /handoff settings 85              (set the percent directly)
+ *   /handoff settings mode early      (set the trigger mode)
+ *
+ * Auto-run: when the context crosses the threshold, the extension generates
+ * the handoff document in the background and saves it as
+ * handoff-ready-<session-id>.md next to the config. The next /handoff
+ * switches instantly using that document. Pi's extension API gives event
+ * hooks no session-switch ability, so the switch itself stays a command.
  *
  * Esc during generation cancels. The loader is TUI-only; in non-interactive
  * modes generation runs headless with the same semantics.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type Message, uuidv7 } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { BorderedLoader, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
@@ -56,25 +63,32 @@ const AGENT_DIR = process.env.PI_CODING_AGENT_DIR
 	? process.env.PI_CODING_AGENT_DIR.replace(/^~(?=\/|$)/, homedir())
 	: join(homedir(), ".pi", "agent");
 const CONFIG_PATH = join(AGENT_DIR, "pi-handoff.json");
-// 78% of a 128k window is roughly 100k tokens — the original default.
-const DEFAULT_THRESHOLD_PERCENT = 78;
 // Used only when the current model reports no context window.
 const DEFAULT_WINDOW = 200000;
+// Models with this or more context default to a 100k token handoff.
+const BIG_WINDOW_MIN = 100000;
+// Smaller models default to half their window.
+const SMALL_WINDOW_PERCENT = 50;
 
-export function readConfig(): { thresholdPercent: number } {
+export interface HandoffConfig {
+	/** null = smart default (100k for windows >= 100k, else 50% of the window). */
+	thresholdPercent: number | null;
+	/** "turn" = check after a full turn (default). "early" = check at the first safe moment mid-turn. */
+	mode: "turn" | "early";
+}
+
+export function readConfig(): HandoffConfig {
 	try {
 		const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
 		const pct = Number(raw.thresholdPercent);
-		if (Number.isFinite(pct) && pct > 0 && pct <= 100) {
-			return { thresholdPercent: Math.round(pct) };
-		}
+		const thresholdPercent = Number.isFinite(pct) && pct > 0 && pct <= 100 ? Math.round(pct) : null;
+		return { thresholdPercent, mode: raw.mode === "early" ? "early" : "turn" };
 	} catch {
-		// missing or unreadable — fall through to the default
+		return { thresholdPercent: null, mode: "turn" };
 	}
-	return { thresholdPercent: DEFAULT_THRESHOLD_PERCENT };
 }
 
-export function ensureConfig(): { thresholdPercent: number } {
+export function ensureConfig(): HandoffConfig {
 	const config = readConfig();
 	if (!existsSync(CONFIG_PATH)) {
 		writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf8");
@@ -82,8 +96,19 @@ export function ensureConfig(): { thresholdPercent: number } {
 	return config;
 }
 
-export function writeConfig(thresholdPercent: number): void {
-	writeFileSync(CONFIG_PATH, JSON.stringify({ thresholdPercent }, null, 2) + "\n", "utf8");
+export function writeConfig(config: HandoffConfig): void {
+	writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf8");
+}
+
+// The effective threshold in tokens for the current model's window.
+export function thresholdTokens(config: HandoffConfig, window: number): number {
+	if (config.thresholdPercent !== null) return Math.round((config.thresholdPercent / 100) * window);
+	return window >= BIG_WINDOW_MIN ? BIG_WINDOW_MIN : Math.round((SMALL_WINDOW_PERCENT / 100) * window);
+}
+
+// The slider start percent that matches the smart default for this window.
+export function defaultPercent(window: number): number {
+	return Math.round((thresholdTokens({ thresholdPercent: null, mode: "turn" }, window) / window) * 100);
 }
 
 // Fixed locale so numbers always group the standard way: 1,000,000, not 10,00,000.
@@ -91,41 +116,54 @@ export function fmt(n: number): string {
 	return n.toLocaleString("en-US");
 }
 
-// Warn once per crossing of the threshold; reset when usage drops (compaction).
-let warnedOverThreshold = false;
+// Path of the auto-prepared handoff document for a session.
+function readyDocPath(sessionId: string): string {
+	return join(AGENT_DIR, `handoff-ready-${sessionId}.md`);
+}
 
-// Arrow-key slider. Left/right step 1%, up/down step 5%. Enter saves, Esc cancels.
-class ThresholdSlider {
+// Auto-run state: one handoff per crossing; reset when usage drops below the threshold.
+let triggeredOverThreshold = false;
+let handoffRunning = false;
+
+// Two-row settings component. Row 0: threshold percent slider (left/right 1%).
+// Row 1: trigger mode toggle ("turn" / "early"). Up/down move between rows.
+// Enter saves, Esc cancels.
+class SettingsSlider {
+	private row = 0;
 	private percent: number;
+	private mode: "turn" | "early";
 
 	constructor(
 		private window: number,
 		private modelName: string,
-		initial: number,
+		initial: HandoffConfig,
 	) {
-		this.percent = initial;
+		this.percent = initial.thresholdPercent ?? defaultPercent(window);
+		this.mode = initial.mode;
 	}
 
-	public onSave?: (percent: number) => void;
+	public onSave?: (config: HandoffConfig) => void;
 	public onCancel?: () => void;
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.left)) {
-			this.change(-1);
-		} else if (matchesKey(data, Key.right)) {
-			this.change(1);
-		} else if (matchesKey(data, Key.up)) {
-			this.change(5);
+		if (matchesKey(data, Key.up)) {
+			this.row = 0;
 		} else if (matchesKey(data, Key.down)) {
-			this.change(-5);
+			this.row = 1;
+		} else if (matchesKey(data, Key.left)) {
+			if (this.row === 0) this.changePercent(-1);
+			else this.mode = this.mode === "early" ? "turn" : "early";
+		} else if (matchesKey(data, Key.right)) {
+			if (this.row === 0) this.changePercent(1);
+			else this.mode = this.mode === "early" ? "turn" : "early";
 		} else if (matchesKey(data, Key.enter)) {
-			this.onSave?.(this.percent);
+			this.onSave?.({ thresholdPercent: this.percent, mode: this.mode });
 		} else if (matchesKey(data, Key.escape)) {
 			this.onCancel?.();
 		}
 	}
 
-	private change(delta: number): void {
+	private changePercent(delta: number): void {
 		this.percent = Math.min(100, Math.max(1, this.percent + delta));
 	}
 
@@ -136,10 +174,13 @@ class ThresholdSlider {
 		const bar = "█".repeat(filled) + "░".repeat(Math.max(0, barWidth - filled));
 		const windowLabel = this.window ? fmt(this.window) : "?";
 		const tokenLabel = this.window ? `${fmt(tokens)} tokens` : "window unknown";
+		const pctRow = `${this.row === 0 ? "> " : "  "}Threshold [${bar}] ${this.percent}% = ${tokenLabel}`;
+		const modeRow = `${this.row === 1 ? "> " : "  "}Trigger   ${this.mode === "turn" ? "[turn] " : " turn  "}/${this.mode === "early" ? "[early]" : " early"}`;
 		return [
 			truncateToWidth(`Model: ${this.modelName} (${windowLabel} token window)`, width),
-			`[${bar}] ${this.percent}% = ${tokenLabel}`,
-			"←/→ 1% · ↑/↓ 5% · Enter save · Esc cancel",
+			truncateToWidth(pctRow, width),
+			truncateToWidth(modeRow, width),
+			"↑/↓ move · ←/→ adjust · Enter save · Esc cancel",
 		];
 	}
 
@@ -259,6 +300,105 @@ function getHandoffMessages(branch: SessionEntry[]): AgentMessage[] {
 	return compactedBranch.map(entryToMessage).filter((m): m is AgentMessage => m !== undefined);
 }
 
+// One-shot LLM call that turns the session messages into a handoff document.
+async function generateHandoffText(
+	ctx: ExtensionContext,
+	messages: AgentMessage[],
+	focus: string | undefined,
+	signal?: AbortSignal,
+): Promise<HandoffGeneration> {
+	const llmMessages = convertToLlm(messages);
+	// The handoff instruction is a trailing user message — mirrors OMP,
+	// which appends it to a snapshot of the live messages.
+	const requestMessages: Message[] = [
+		...llmMessages,
+		{
+			role: "user",
+			content: [{ type: "text", text: renderHandoffPrompt(focus) }],
+			timestamp: Date.now(),
+		},
+	];
+	try {
+		const response = await ctx.modelRegistry.complete(
+			ctx.model!,
+			{ systemPrompt: SYSTEM_PROMPT, messages: requestMessages },
+			{
+				signal,
+				cacheRetention: "none",
+				sessionId: uuidv7(),
+			},
+		);
+		if (response.stopReason === "aborted") return { status: "cancelled" };
+		if (response.stopReason === "error") {
+			console.error("Handoff generation failed:", response.errorMessage ?? response.stopReason);
+			return {
+				status: "failed",
+				reason: response.errorMessage?.slice(0, 160) ?? "provider error",
+			};
+		}
+		const text = response.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("\n")
+			.trim();
+		if (text.length === 0) return { status: "failed", reason: "empty document" };
+		return { status: "ok", text };
+	} catch (error) {
+		console.error("Handoff generation failed:", error);
+		return {
+			status: "failed",
+			reason: error instanceof Error ? error.message.slice(0, 160) : String(error),
+		};
+	}
+}
+
+// Auto-run: when the context crosses the threshold, generate the handoff
+// document in the background and save it for the next /handoff. Event hooks
+// cannot start sessions (newSession is command-only in pi's extension API),
+// so the switch itself stays a /handoff keystroke — but it is instant.
+async function maybeAutoHandoff(ctx: ExtensionContext, tokens: number): Promise<void> {
+	if (!tokens || handoffRunning) return;
+	const config = readConfig();
+	const usage = ctx.getContextUsage();
+	const window = usage?.contextWindow ?? ctx.model?.contextWindow ?? DEFAULT_WINDOW;
+	const threshold = thresholdTokens(config, window);
+	if (tokens <= threshold) {
+		triggeredOverThreshold = false;
+		return;
+	}
+	if (triggeredOverThreshold) return;
+	triggeredOverThreshold = true;
+	handoffRunning = true;
+	try {
+		if (!ctx.model) return;
+		const messages = getHandoffMessages(ctx.sessionManager.getBranch());
+		if (messages.length < 2) return;
+		const generation = await generateHandoffText(
+			ctx,
+			messages,
+			"auto: context crossed the configured threshold",
+		);
+		if (generation.status !== "ok") {
+			ctx.ui.notify(
+				`Auto handoff failed: ${generation.status === "cancelled" ? "cancelled" : generation.reason}`,
+				"error",
+			);
+			triggeredOverThreshold = false; // allow a retry next check
+			return;
+		}
+		writeFileSync(readyDocPath(ctx.sessionManager.getSessionId()), generation.text, "utf8");
+		ctx.ui.notify(
+			`Context crossed the threshold (${fmt(tokens)} tokens, threshold ${fmt(threshold)}). Handoff document ready — run /handoff to switch.`,
+			"warning",
+		);
+	} catch (error) {
+		console.error("Auto handoff failed:", error);
+		triggeredOverThreshold = false;
+	} finally {
+		handoffRunning = false;
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("handoff", {
 		description: "Hand off session context to a new session. /handoff settings opens the config",
@@ -267,6 +407,19 @@ export default function (pi: ExtensionAPI) {
 				const config = ensureConfig();
 				const window = ctx.model?.contextWindow ?? DEFAULT_WINDOW;
 				const rest = args.trim().slice("settings".length).trim();
+				const modeMatch = rest.toLowerCase().match(/^mode(?:\s+(early|turn))?$/);
+				if (modeMatch) {
+					const mode = modeMatch[1]
+						? modeMatch[1] === "early"
+							? "early"
+							: "turn"
+						: config.mode === "early"
+							? "turn"
+							: "early";
+					writeConfig({ ...config, mode });
+					ctx.ui.notify(`Trigger mode set to ${mode}`, "info");
+					return;
+				}
 				if (rest !== "") {
 					const value = Number(rest);
 					if (!Number.isFinite(value) || value <= 0 || value > 100) {
@@ -274,26 +427,22 @@ export default function (pi: ExtensionAPI) {
 						return;
 					}
 					const pct = Math.round(value);
-					writeConfig(pct);
+					writeConfig({ ...config, thresholdPercent: pct });
 					ctx.ui.notify(
-						`Threshold set to ${pct}% (${fmt(Math.round((pct / 100) * window))} tokens)`,
+						`Threshold set to ${pct}% (${fmt(thresholdTokens({ ...config, thresholdPercent: pct }, window))} tokens)`,
 						"info",
 					);
 					return;
 				}
 				if (ctx.mode !== "tui" && ctx.mode !== "rpc") {
 					ctx.ui.notify(
-						`Threshold: ${config.thresholdPercent}% (${fmt(Math.round((config.thresholdPercent / 100) * window))} tokens)`,
+						`Threshold ${config.thresholdPercent === null ? "auto" : config.thresholdPercent + "%"} (${fmt(thresholdTokens(config, window))} tokens), mode ${config.mode}`,
 						"info",
 					);
 					return;
 				}
-				const result = await ctx.ui.custom<number | null>((tui, _theme, _kb, done) => {
-					const slider = new ThresholdSlider(
-						window,
-						ctx.model?.name ?? "unknown",
-						config.thresholdPercent,
-					);
+				const result = await ctx.ui.custom<HandoffConfig | null>((tui, _theme, _kb, done) => {
+					const slider = new SettingsSlider(window, ctx.model?.name ?? "unknown", config);
 					slider.onSave = done;
 					slider.onCancel = () => done(null);
 					return {
@@ -308,7 +457,7 @@ export default function (pi: ExtensionAPI) {
 				if (result === null || result === undefined) return; // cancelled
 				writeConfig(result);
 				ctx.ui.notify(
-					`Threshold set to ${result}% (${fmt(Math.round((result / 100) * window))} tokens)`,
+					`Threshold ${result.thresholdPercent}%, mode ${result.mode} (${fmt(thresholdTokens(result, window))} tokens)`,
 					"info",
 				);
 				return;
@@ -334,90 +483,52 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const focus = args.trim() || undefined;
-			const llmMessages = convertToLlm(messages);
 			const currentSessionFile = ctx.sessionManager.getSessionFile();
+			const readyPath = readyDocPath(ctx.sessionManager.getSessionId());
 
-			// The handoff instruction is a trailing user message — mirrors OMP,
-			// which appends it to a snapshot of the live messages.
-			const requestMessages: Message[] = [
-				...llmMessages,
-				{
-					role: "user",
-					content: [{ type: "text", text: renderHandoffPrompt(focus) }],
-					timestamp: Date.now(),
-				},
-			];
+			// Use the auto-prepared document when one exists for this session.
+			let handoffText: string | undefined;
+			if (existsSync(readyPath)) {
+				handoffText = readFileSync(readyPath, "utf8");
+			}
 
-			const generate = async (signal?: AbortSignal): Promise<HandoffGeneration> => {
-				try {
-					const response = await ctx.modelRegistry.complete(
-						ctx.model!,
-						{ systemPrompt: SYSTEM_PROMPT, messages: requestMessages },
-						{
-							signal,
-							cacheRetention: "none",
-							sessionId: uuidv7(),
-						},
-					);
-					if (response.stopReason === "aborted") return { status: "cancelled" };
-					if (response.stopReason === "error") {
-						console.error("Handoff generation failed:", response.errorMessage ?? response.stopReason);
-						return {
-							status: "failed",
-							reason: response.errorMessage?.slice(0, 160) ?? "provider error",
-						};
-					}
-					const text = response.content
-						.filter((c): c is { type: "text"; text: string } => c.type === "text")
-						.map((c) => c.text)
-						.join("\n")
-						.trim();
-					if (text.length === 0) return { status: "failed", reason: "empty document" };
-					return { status: "ok", text };
-				} catch (error) {
-					console.error("Handoff generation failed:", error);
-					return {
-						status: "failed",
-						reason: error instanceof Error ? error.message.slice(0, 160) : String(error),
-					};
-				}
-			};
-
-			let handoff: HandoffGeneration;
-			if (ctx.mode === "tui") {
-				handoff = await ctx.ui.custom<HandoffGeneration>((tui, theme, _kb, done) => {
-					const loader = new BorderedLoader(tui, theme, "Generating handoff… (esc to cancel)");
-					loader.onAbort = () => done({ status: "cancelled" });
-					generate(loader.signal)
-						.then(done)
-						.catch((error) => {
-							console.error("Handoff generation failed:", error);
-							done({
-								status: "failed",
-								reason: error instanceof Error ? error.message.slice(0, 160) : String(error),
+			if (handoffText === undefined) {
+				let handoff: HandoffGeneration;
+				if (ctx.mode === "tui") {
+					handoff = await ctx.ui.custom<HandoffGeneration>((tui, theme, _kb, done) => {
+						const loader = new BorderedLoader(tui, theme, "Generating handoff… (esc to cancel)");
+						loader.onAbort = () => done({ status: "cancelled" });
+						generateHandoffText(ctx, messages, focus, loader.signal)
+							.then(done)
+							.catch((error) => {
+								console.error("Handoff generation failed:", error);
+								done({
+									status: "failed",
+									reason: error instanceof Error ? error.message.slice(0, 160) : String(error),
+								});
 							});
-						});
-					return loader;
-				});
-			} else {
-				handoff = await generate();
-			}
+						return loader;
+					});
+				} else {
+					handoff = await generateHandoffText(ctx, messages, focus);
+				}
 
-			if (handoff.status !== "ok") {
-				ctx.ui.notify(
-					handoff.status === "cancelled" ? "Handoff cancelled" : `Handoff failed: ${handoff.reason}`,
-					handoff.status === "cancelled" ? "info" : "error",
-				);
-				return;
+				if (handoff.status !== "ok") {
+					ctx.ui.notify(
+						handoff.status === "cancelled" ? "Handoff cancelled" : `Handoff failed: ${handoff.reason}`,
+						handoff.status === "cancelled" ? "info" : "error",
+					);
+					return;
+				}
+				handoffText = handoff.text;
 			}
-			const handoffText = handoff.text;
 
 			// Start a brand-new session; the ONLY carried context is the handoff
 			// document, injected as a custom in-context message.
 			const result = await ctx.newSession({
 				parentSession: currentSessionFile,
 				setup: async (sm) => {
-					sm.appendCustomMessageEntry("handoff", createHandoffContext(handoffText), true);
+					sm.appendCustomMessageEntry("handoff", createHandoffContext(handoffText!), true);
 				},
 				withSession: async (replacementCtx) => {
 					replacementCtx.ui.notify("New session started with handoff context", "info");
@@ -426,29 +537,33 @@ export default function (pi: ExtensionAPI) {
 
 			if (result.cancelled) {
 				ctx.ui.notify("New session cancelled", "info");
+			} else if (existsSync(readyPath)) {
+				rmSync(readyPath, { force: true }); // the document was consumed
 			}
 		},
 	});
 
-	// Auto-watch: after each turn, warn once when context crosses the
-	// configured threshold. Detection only; the actual handoff stays manual.
-	pi.on("turn_end", (event, ctx) => {
+	// Auto-run. Mode "turn" (default): check after each full turn. Mode
+	// "early": check at the first safe moment, right after an assistant
+	// message (thinking done, next tool not yet run). One handoff per
+	// crossing; never runs while a handoff is already in flight.
+	pi.on("turn_end", async (event, ctx) => {
+		if (readConfig().mode !== "turn") return;
 		const message = event.message;
 		if (message.role !== "assistant") return;
 		const usage = message.usage;
 		const tokens = (usage?.input ?? 0) + (usage?.cacheRead ?? 0);
 		if (!tokens) return;
-		const { thresholdPercent } = readConfig();
-		const window = ctx.model?.contextWindow ?? DEFAULT_WINDOW;
-		const thresholdTokens = Math.round((thresholdPercent / 100) * window);
-		if (tokens > thresholdTokens && !warnedOverThreshold) {
-			warnedOverThreshold = true;
-			ctx.ui.notify(
-				`Context at ${fmt(tokens)} tokens, over your threshold of ${thresholdPercent}% (${fmt(thresholdTokens)}). Run /handoff to hand off.`,
-				"warning",
-			);
-		} else if (tokens <= thresholdTokens) {
-			warnedOverThreshold = false;
-		}
+		await maybeAutoHandoff(ctx, tokens);
+	});
+
+	pi.on("message_end", async (event, ctx) => {
+		if (readConfig().mode !== "early") return;
+		const message = event.message;
+		if (message.role !== "assistant") return;
+		const usage = message.usage;
+		const tokens = (usage?.input ?? 0) + (usage?.cacheRead ?? 0);
+		if (!tokens) return;
+		await maybeAutoHandoff(ctx, tokens);
 	});
 }
