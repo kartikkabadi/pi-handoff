@@ -11,3 +11,10 @@ jobs:
         with:
           node-version: "24"
       - run: npm run test:config
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run test
