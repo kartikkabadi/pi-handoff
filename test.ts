@@ -12,7 +12,7 @@ mkdirSync(tmpDir, { recursive: true });
 process.env.PI_CODING_AGENT_DIR = agentDir;
 process.env.TMPDIR = tmpDir;
 
-const { readConfig, ensureConfig, writeConfig, thresholdTokens, defaultPercent, fmt, pruneOtherSessions } = await import("./handoff.ts");
+const { default: registerHandoff, readConfig, ensureConfig, writeConfig, thresholdTokens, defaultPercent, fmt, pruneOtherSessions } = await import("./handoff.ts");
 
 let failed = 0;
 function assert(name: string, cond: boolean) {
@@ -44,7 +44,7 @@ assert("corrupt config falls back to defaults", readConfig().thresholdPercent ==
 
 assert("fmt groups the standard way", fmt(1000000) === "1,000,000" && fmt(10000) === "10,000");
 
-// Prune: only the current session's handoff files survive; non-handoff files are untouched.
+// Prune: recent parallel sessions and non-handoff files survive.
 const moduleTmp = join(tmpDir, "pi-handoff");
 mkdirSync(moduleTmp, { recursive: true });
 const sessionId = "sess-123";
@@ -62,6 +62,40 @@ assert("prune keeps the current session's files", existsSync(join(moduleTmp, `ha
 assert("prune keeps non-handoff files", existsSync(join(moduleTmp, "other.txt")));
 assert("prune preserves other active sessions' files", existsSync(join(moduleTmp, "handoff-old.md")) && existsSync(join(moduleTmp, "handoff-ready-old.md")));
 assert("prune removes expired session files", !existsSync(expired));
+
+
+let handler;
+registerHandoff({ registerCommand(_name, command) { handler = command.handler; }, on() {} });
+let generations = 0;
+let prompt = "";
+let injected = "";
+const ctx = {
+    mode: "rpc", model: {}, isIdle: () => true,
+    ui: { notify() {} },
+    sessionManager: {
+        getSessionId: () => sessionId,
+        getSessionFile: () => undefined,
+        getBranch: () => [1, 2].map(i => ({
+            type: "message", id: `m${i}`, timestamp: new Date(i).toISOString(),
+            message: { role: "user", content: `Task ${i}`, timestamp: i },
+        })),
+    },
+    modelRegistry: { async complete(_model, context) {
+        generations++;
+        prompt = context.messages.at(-1).content[0].text;
+        return { stopReason: "stop", content: [{ type: "text", text: "Focused handoff" }] };
+    } },
+    async newSession(options) {
+        await options.setup({ appendCustomMessageEntry(_type, text) { injected = text; } });
+        return { cancelled: true };
+    },
+};
+writeFileSync(join(moduleTmp, `handoff-ready-${sessionId}.md`), "Prepared handoff");
+await handler("", ctx);
+assert("bare handoff uses the prepared document", generations === 0 && injected.includes("Prepared handoff"));
+await handler("focus on billing", ctx);
+assert("focused handoff generates a new document", generations === 1 && injected.includes("Focused handoff"));
+assert("focused handoff forwards the requested focus", prompt.includes("Additional focus: focus on billing"));
 
 rmSync(base, { recursive: true, force: true });
 process.exit(failed);
