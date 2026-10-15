@@ -58,6 +58,8 @@ When the context crosses the threshold, the extension generates the handoff docu
 
 Pruning: when a session starts, other sessions' handoff files are removed only when they are more than seven days old. Recent files from parallel sessions and the current session's files survive. The prepared document is also deleted the moment `/handoff` consumes it.
 
+An explicit focus, such as `/handoff focus on billing`, generates a fresh document instead of reusing an auto-prepared snapshot.
+
 A note on "auto": pi's extension API gives event hooks no session-switch ability (`newSession` is command-only), so the actual switch stays a `/handoff` keystroke. Everything else (detection, document generation, saving) is automatic. Full zero-keystroke switching would need a pi fork (OMP-style).
 
 ## How it works
