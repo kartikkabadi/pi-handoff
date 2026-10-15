@@ -5,7 +5,8 @@
   "keywords": ["pi-package", "pi-extension", "handoff", "sessions", "omp"],
   "license": "MIT",
   "scripts": {
-    "test": "bun test.ts"
+    "test": "bun config.test.ts && bun test.ts",
+    "test:config": "node config.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -17,3 +18,4 @@
     "extensions": ["./handoff.ts"]
   }
 }
+
