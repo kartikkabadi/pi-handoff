@@ -464,7 +464,7 @@ export default function (pi: ExtensionAPI) {
 			// It is a snapshot of the conversation at the crossing; work after the
 			// crossing stays in the old session (kept as the parent).
 			let handoffText: string | undefined;
-			if (existsSync(readyPath)) {
+			if (!focus && existsSync(readyPath)) {
 				handoffText = readFileSync(readyPath, "utf8");
 			}
 
