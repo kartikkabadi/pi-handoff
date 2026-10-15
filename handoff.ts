@@ -79,8 +79,12 @@ export function pruneOtherSessions(sessionId: string): void {
 			const match = /^handoff-(?:ready-)?(.+)\.md$/.exec(file);
 			if (!match || match[1] === sessionId) continue;
 			const path = join(TMP_DIR, file);
-			if (Date.now() - statSync(path).mtimeMs < 7 * 24 * 60 * 60 * 1000) continue;
-			rmSync(path, { force: true });
+			try {
+				if (Date.now() - statSync(path).mtimeMs < 7 * 24 * 60 * 60 * 1000) continue;
+				rmSync(path, { force: true });
+			} catch {
+				// Another session may have removed this entry. Continue pruning.
+			}
 		}
 	} catch {
 		// no temp dir yet: nothing to prune
