@@ -45,7 +45,7 @@
  * modes generation runs headless with the same semantics.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -72,12 +72,15 @@ function readyDocPath(sessionId: string): string {
 	return join(TMP_DIR, `handoff-ready-${sessionId}.md`);
 }
 
-// Delete handoff files from other sessions; keep only the current session's.
+// Keep recent files from parallel sessions; expire abandoned handoffs after a week.
 export function pruneOtherSessions(sessionId: string): void {
 	try {
 		for (const file of readdirSync(TMP_DIR)) {
-			if (!file.startsWith("handoff-") || file.includes(sessionId)) continue;
-			rmSync(join(TMP_DIR, file), { force: true });
+			const match = /^handoff-(?:ready-)?(.+)\.md$/.exec(file);
+			if (!match || match[1] === sessionId) continue;
+			const path = join(TMP_DIR, file);
+			if (Date.now() - statSync(path).mtimeMs < 7 * 24 * 60 * 60 * 1000) continue;
+			rmSync(path, { force: true });
 		}
 	} catch {
 		// no temp dir yet: nothing to prune
@@ -530,8 +533,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// Prune on session start: handoff files from other sessions are deleted.
-	// Only files belonging to the current session survive.
+	// Prune expired handoffs without deleting another active session's document.
 	pi.on("session_start", (_event, ctx) => {
 		pruneOtherSessions(ctx.sessionManager.getSessionId());
 	});
