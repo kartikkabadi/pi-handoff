@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir as osTmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -53,10 +53,16 @@ writeFileSync(join(moduleTmp, "handoff-ready-old.md"), "x");
 writeFileSync(join(moduleTmp, `handoff-ready-${sessionId}.md`), "x");
 writeFileSync(join(moduleTmp, `handoff-${sessionId}.md`), "x");
 writeFileSync(join(moduleTmp, "other.txt"), "x");
+const expired = join(moduleTmp, "handoff-expired.md");
+writeFileSync(expired, "x");
+const oldTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+utimesSync(expired, oldTime, oldTime);
 pruneOtherSessions(sessionId);
 assert("prune keeps the current session's files", existsSync(join(moduleTmp, `handoff-ready-${sessionId}.md`)) && existsSync(join(moduleTmp, `handoff-${sessionId}.md`)));
 assert("prune keeps non-handoff files", existsSync(join(moduleTmp, "other.txt")));
-assert("prune deletes other sessions' files", !existsSync(join(moduleTmp, "handoff-old.md")) && !existsSync(join(moduleTmp, "handoff-ready-old.md")));
+assert("prune preserves other active sessions' files", existsSync(join(moduleTmp, "handoff-old.md")) && existsSync(join(moduleTmp, "handoff-ready-old.md")));
+assert("prune removes expired session files", !existsSync(expired));
 
 rmSync(base, { recursive: true, force: true });
 process.exit(failed);
+
