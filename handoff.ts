@@ -55,12 +55,12 @@ import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-wor
 import { BorderedLoader, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
+import { defaultPercent, ensureConfig, fmt, readConfig, thresholdTokens, writeConfig, type HandoffConfig } from "./config.ts";
+export { defaultPercent, ensureConfig, fmt, readConfig, thresholdTokens, writeConfig, type HandoffConfig } from "./config.ts";
+
 // ---------------------------------------------------------------------------
 // Config: a single threshold, stored next to pi's own settings.
 // ---------------------------------------------------------------------------
-
-import { readConfig, ensureConfig, writeConfig, thresholdTokens, defaultPercent, fmt, type HandoffConfig } from "./config.ts";
-export { readConfig, ensureConfig, writeConfig, thresholdTokens, defaultPercent, fmt, type HandoffConfig } from "./config.ts";
 
 const DEFAULT_WINDOW = 200000;
 
