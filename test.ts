@@ -57,7 +57,7 @@ const expired = join(moduleTmp, "handoff-expired.md");
 writeFileSync(expired, "x");
 const oldTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
 utimesSync(expired, oldTime, oldTime);
-symlinkSync(join(moduleTmp, "missing-target"), join(moduleTmp, "handoff-aaa-missing.md"));
+if (process.platform !== "win32") symlinkSync(join(moduleTmp, "missing-target"), join(moduleTmp, "handoff-aaa-missing.md"));
 pruneOtherSessions(sessionId);
 assert("prune keeps the current session's files", existsSync(join(moduleTmp, `handoff-ready-${sessionId}.md`)) && existsSync(join(moduleTmp, `handoff-${sessionId}.md`)));
 assert("prune keeps non-handoff files", existsSync(join(moduleTmp, "other.txt")));
